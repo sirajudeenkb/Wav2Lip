@@ -17,6 +17,10 @@ app.config['OUTPUT_FOLDER'] = OUTPUT_FOLDER
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
+@app.route("/")
+def hello():
+    return "I am not alive!"
+
 @app.route('/process_video', methods=['POST'])
 def process_video():
     if 'video' not in request.files or 'audio' not in request.files:
