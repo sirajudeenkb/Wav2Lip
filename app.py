@@ -19,7 +19,7 @@ os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
 @app.route("/")
 def hello():
-    return "I am not alive!"
+    return "I am alive!"
 
 @app.route('/process_video', methods=['POST'])
 def process_video():
