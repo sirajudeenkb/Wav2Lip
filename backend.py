@@ -24,7 +24,7 @@ os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 # Initialize models
 whisper_model = WhisperModel("medium.en", device="cuda", compute_type="float16")
 translator = Translator()
-device = "cuda" if torch.cuda.is_available() else "cpu"
+device = "cuda"
 tts = TTS("tts_models/multilingual/multi-dataset/xtts_v2").to(device)
 
 # Language mapping
