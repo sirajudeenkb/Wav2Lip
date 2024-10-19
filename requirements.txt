@@ -1,3 +1,4 @@
+TTS
 librosa==0.8.0
 numpy==1.23.4
 opencv-contrib-python
@@ -6,3 +7,5 @@ torch
 torchvision
 tqdm
 numba
+googletrans==4.0.0-rc1
+faster-whisper
