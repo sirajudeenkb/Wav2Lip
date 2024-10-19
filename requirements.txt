@@ -1,6 +1,6 @@
 TTS
 numpy==1.24.0
-librosa==0.8.0
+librosa
 opencv-contrib-python
 opencv-python
 torch
