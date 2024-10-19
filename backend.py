@@ -56,6 +56,10 @@ def synthesize_voice(text, target_language_code, original_audio_path):
     )
     return output_path
 
+@app.route("/")
+def hello():
+    return "I am alive!"
+
 @app.route('/process_video', methods=['POST'])
 def process_video():
     if 'video' not in request.files or 'target_language' not in request.form:
