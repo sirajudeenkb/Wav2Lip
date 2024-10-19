@@ -1,5 +1,5 @@
 TTS
-numpy==1.24.0
+numpy
 librosa
 opencv-contrib-python
 opencv-python
