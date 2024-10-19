@@ -5,7 +5,6 @@ from werkzeug.utils import secure_filename
 from faster_whisper import WhisperModel
 from googletrans import Translator
 from TTS.api import TTS
-import torch
 
 app = Flask(__name__)
 
