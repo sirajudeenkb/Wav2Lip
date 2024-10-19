@@ -1,4 +1,4 @@
-TTS
+coqui-tts
 numpy
 librosa
 opencv-contrib-python
