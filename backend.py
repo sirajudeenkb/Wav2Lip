@@ -1,4 +1,5 @@
 from flask import Flask, request, send_file, jsonify
+from flask_cors import CORS
 import os
 import subprocess
 import logging
@@ -7,8 +8,6 @@ from faster_whisper import WhisperModel
 from googletrans import Translator
 from TTS.api import TTS
 from pathlib import Path
-from typing import Optional, Tuple
-import shutil
 import tempfile
 
 # Configure logging
@@ -112,6 +111,24 @@ class VideoProcessor:
 def create_app() -> Flask:
     """Application factory function"""
     app = Flask(__name__)
+    # Configure CORS
+    CORS(app, resources={
+        r"/process_video": {
+            "origins": [
+                "http://localhost:3000",  # React development server
+                "http://localhost:5173",  # Vite development server
+                # Add your production frontend URL when deployed
+            ],
+            "methods": ["POST", "OPTIONS"],
+            "allow_headers": ["Content-Type"],
+            "max_age": 3600
+        },
+        r"/health": {
+            "origins": "*",  # Allow health checks from anywhere
+            "methods": ["GET"]
+        }
+    })
+    
     app.config['MAX_CONTENT_LENGTH'] = Config.MAX_CONTENT_LENGTH
     processor = VideoProcessor()
 
@@ -168,6 +185,14 @@ def create_app() -> Flask:
         except Exception as e:
             logger.error(f"Error processing video: {str(e)}")
             return jsonify({'error': 'Internal server error', 'details': str(e)}), 500
+        
+    @app.after_request
+    def after_request(response):
+        """Ensure proper CORS headers are set"""
+        response.headers.add('Access-Control-Allow-Origin', 'http://localhost:3000')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
+        response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
+        return response
 
     return app
 
