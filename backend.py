@@ -1,124 +1,176 @@
-from flask import Flask, request, send_file
+from flask import Flask, request, send_file, jsonify
 import os
 import subprocess
+import logging
 from werkzeug.utils import secure_filename
 from faster_whisper import WhisperModel
 from googletrans import Translator
 from TTS.api import TTS
+from pathlib import Path
+from typing import Optional, Tuple
+import shutil
+import tempfile
 
-app = Flask(__name__)
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
-# Configure folders
-WAV2LIP_FOLDER = '/content/Wav2Lip'
-UPLOAD_FOLDER = '/content/uploads'
-OUTPUT_FOLDER = '/content/outputs'
+class Config:
+    """Configuration management class"""
+    WAV2LIP_FOLDER = '/content/Wav2Lip'
+    UPLOAD_FOLDER = '/content/uploads'
+    OUTPUT_FOLDER = '/content/outputs'
+    ALLOWED_EXTENSIONS = {'mp4', 'avi', 'mov', 'mkv'}
+    MAX_CONTENT_LENGTH = 100 * 1024 * 1024  # 100MB max file size
 
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-app.config['OUTPUT_FOLDER'] = OUTPUT_FOLDER
+    # Language mapping
+    LANGUAGE_MAPPING = {
+        'English': 'en', 'Spanish': 'es', 'French': 'fr', 'German': 'de',
+        'Italian': 'it', 'Portuguese': 'pt', 'Polish': 'pl', 'Turkish': 'tr',
+        'Russian': 'ru', 'Dutch': 'nl', 'Czech': 'cs', 'Arabic': 'ar',
+        'Chinese (Simplified)': 'zh-cn'
+    }
 
-# Ensure directories exist
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+class VideoProcessor:
+    """Handles video processing operations"""
+    def __init__(self):
+        self.whisper_model = WhisperModel("medium.en", device="cuda", compute_type="float16")
+        self.translator = Translator()
+        self.tts = TTS("tts_models/multilingual/multi-dataset/xtts_v2").to("cuda")
+        
+        # Create necessary directories
+        for folder in [Config.UPLOAD_FOLDER, Config.OUTPUT_FOLDER]:
+            Path(folder).mkdir(parents=True, exist_ok=True)
 
-# Initialize models
-whisper_model = WhisperModel("medium.en", device="cuda", compute_type="float16")
-translator = Translator()
-device = "cuda"
-tts = TTS("tts_models/multilingual/multi-dataset/xtts_v2").to(device)
-
-# Language mapping
-language_mapping = {
-    'English': 'en', 'Spanish': 'es', 'French': 'fr', 'German': 'de',
-    'Italian': 'it', 'Portuguese': 'pt', 'Polish': 'pl', 'Turkish': 'tr',
-    'Russian': 'ru', 'Dutch': 'nl', 'Czech': 'cs', 'Arabic': 'ar',
-    'Chinese (Simplified)': 'zh-cn'
-}
-
-def extract_audio(video_path):
-    audio_path = os.path.join(app.config['UPLOAD_FOLDER'], 'extracted_audio.wav')
-    ffmpeg_command = f"ffmpeg -i '{video_path}' -acodec pcm_s24le -ar 48000 -q:a 0 -map a -y '{audio_path}'"
-    subprocess.run(ffmpeg_command, shell=True, check=True)
-    return audio_path
-
-def transcribe_audio(file_path):
-    segments, _ = whisper_model.transcribe(file_path)
-    return " ".join([segment.text for segment in segments])
-
-def translate_text(text, target_language_code):
-    return translator.translate(text, dest=target_language_code).text
-
-def synthesize_voice(text, target_language_code, original_audio_path):
-    output_path = os.path.join(app.config['UPLOAD_FOLDER'], 'synthesized_audio.wav')
-    tts.tts_to_file(text,
-        speaker_wav=original_audio_path,
-        file_path=output_path,
-        language=target_language_code
-    )
-    return output_path
-
-@app.route("/")
-def hello():
-    return "I am alive!"
-
-@app.route('/process_video', methods=['POST'])
-def process_video():
-    if 'video' not in request.files or 'target_language' not in request.form:
-        return 'Missing video file or target language', 400
-
-    video_file = request.files['video']
-    target_language = request.form['target_language']
-
-    if video_file.filename == '':
-        return 'No selected file', 400
-
-    if target_language not in language_mapping:
-        return 'Invalid target language', 400
-
-    target_language_code = language_mapping[target_language]
-
-    if video_file:
+    def extract_audio(self, video_path: str) -> str:
+        """Extract audio from video file"""
+        audio_path = os.path.join(tempfile.gettempdir(), 'extracted_audio.wav')
         try:
-            # Save and process video
-            video_filename = secure_filename(video_file.filename)
-            video_path = os.path.join(app.config['UPLOAD_FOLDER'], video_filename)
-            video_file.save(video_path)
+            ffmpeg_command = [
+                'ffmpeg', '-i', video_path, '-acodec', 'pcm_s24le',
+                '-ar', '48000', '-q:a', '0', '-map', 'a', '-y', audio_path
+            ]
+            subprocess.run(ffmpeg_command, check=True, capture_output=True)
+            return audio_path
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Failed to extract audio: {e.stderr.decode()}")
+            raise RuntimeError("Audio extraction failed")
 
-            # Extract audio
-            audio_path = extract_audio(video_path)
+    def transcribe_audio(self, file_path: str) -> str:
+        """Transcribe audio to text"""
+        try:
+            segments, _ = self.whisper_model.transcribe(file_path)
+            return " ".join([segment.text for segment in segments])
+        except Exception as e:
+            logger.error(f"Transcription failed: {str(e)}")
+            raise
 
-            # Transcribe audio
-            transcription = transcribe_audio(audio_path)
+    def translate_text(self, text: str, target_language_code: str) -> str:
+        """Translate text to target language"""
+        try:
+            return self.translator.translate(text, dest=target_language_code).text
+        except Exception as e:
+            logger.error(f"Translation failed: {str(e)}")
+            raise
 
-            # Translate text
-            translated_text = translate_text(transcription, target_language_code)
+    def synthesize_voice(self, text: str, target_language_code: str, original_audio_path: str) -> str:
+        """Synthesize voice from text"""
+        output_path = os.path.join(tempfile.gettempdir(), 'synthesized_audio.wav')
+        try:
+            self.tts.tts_to_file(
+                text,
+                speaker_wav=original_audio_path,
+                file_path=output_path,
+                language=target_language_code
+            )
+            return output_path
+        except Exception as e:
+            logger.error(f"Voice synthesis failed: {str(e)}")
+            raise
 
-            # Synthesize voice
-            synthesized_audio_path = synthesize_voice(translated_text, target_language_code, audio_path)
-
-            # Run Wav2Lip
-            output_filename = f"output_{video_filename}"
-            output_path = os.path.join(app.config['OUTPUT_FOLDER'], output_filename)
+    def run_wav2lip(self, video_path: str, audio_path: str, output_path: str):
+        """Run Wav2Lip for lip synchronization"""
+        try:
             wav2lip_command = [
-                "python", os.path.join(WAV2LIP_FOLDER, "inference.py"),
-                "--checkpoint_path", os.path.join(WAV2LIP_FOLDER, "checkpoints/wav2lip.pth"),
+                "python", os.path.join(Config.WAV2LIP_FOLDER, "inference.py"),
+                "--checkpoint_path", os.path.join(Config.WAV2LIP_FOLDER, "checkpoints/wav2lip.pth"),
                 "--face", video_path,
-                "--audio", synthesized_audio_path,
+                "--audio", audio_path,
                 "--pads", "0", "15", "0", "0",
                 "--resize_factor", "1",
                 "--nosmooth",
                 "--outfile", output_path
             ]
-            subprocess.run(wav2lip_command, check=True, cwd=WAV2LIP_FOLDER)
+            subprocess.run(wav2lip_command, check=True, cwd=Config.WAV2LIP_FOLDER, capture_output=True)
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Wav2Lip processing failed: {e.stderr.decode()}")
+            raise RuntimeError("Lip synchronization failed")
 
-            # Clean up temporary files
-            os.remove(video_path)
-            os.remove(audio_path)
-            os.remove(synthesized_audio_path)
+def create_app() -> Flask:
+    """Application factory function"""
+    app = Flask(__name__)
+    app.config['MAX_CONTENT_LENGTH'] = Config.MAX_CONTENT_LENGTH
+    processor = VideoProcessor()
 
-            return send_file(output_path, as_attachment=True)
+    def allowed_file(filename: str) -> bool:
+        return '.' in filename and filename.rsplit('.', 1)[1].lower() in Config.ALLOWED_EXTENSIONS
+
+    @app.route("/health")
+    def health_check():
+        return jsonify({"status": "healthy"}), 200
+
+    @app.route('/process_video', methods=['POST'])
+    def process_video():
+        try:
+            # Validate request
+            if 'video' not in request.files or 'target_language' not in request.form:
+                return jsonify({'error': 'Missing video file or target language'}), 400
+
+            video_file = request.files['video']
+            target_language = request.form['target_language']
+
+            if video_file.filename == '' or not allowed_file(video_file.filename):
+                return jsonify({'error': 'Invalid file type'}), 400
+
+            if target_language not in Config.LANGUAGE_MAPPING:
+                return jsonify({'error': 'Unsupported target language'}), 400
+
+            target_language_code = Config.LANGUAGE_MAPPING[target_language]
+
+            # Create temporary directory for processing
+            with tempfile.TemporaryDirectory() as temp_dir:
+                # Save and process video
+                video_filename = secure_filename(video_file.filename)
+                video_path = os.path.join(temp_dir, video_filename)
+                video_file.save(video_path)
+
+                # Process video
+                audio_path = processor.extract_audio(video_path)
+                transcription = processor.transcribe_audio(audio_path)
+                translated_text = processor.translate_text(transcription, target_language_code)
+                synthesized_audio_path = processor.synthesize_voice(
+                    translated_text, target_language_code, audio_path
+                )
+
+                # Generate output path
+                output_filename = f"output_{video_filename}"
+                output_path = os.path.join(Config.OUTPUT_FOLDER, output_filename)
+
+                # Run Wav2Lip
+                processor.run_wav2lip(video_path, synthesized_audio_path, output_path)
+
+                # Return processed video
+                return send_file(output_path, as_attachment=True)
 
         except Exception as e:
-            return f"Error processing video: {str(e)}", 500
+            logger.error(f"Error processing video: {str(e)}")
+            return jsonify({'error': 'Internal server error', 'details': str(e)}), 500
+
+    return app
 
 if __name__ == '__main__':
+    app = create_app()
     app.run(debug=True, host='0.0.0.0')
